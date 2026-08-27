@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import time
 import config
 
 # set autopilot target
@@ -8,13 +9,10 @@ def set_target(target):
         st_name = config.normalize_station(target)
         if st_name in config.STATIONS:
             tx, ty = config.STATIONS[st_name]
-            # set named target and explicit coordinates
-            config.curl(f'-XPOST http://{config.HOST}:2009/set_target -d \'{{"target": "{st_name}"}}\'')
             return config.curl(f'-XPOST http://{config.HOST}:2009/set_target -d \'{{"target": {{"x": {tx}, "y": {ty}}}}}\'')
         else:
-            # set custom target name
-            return config.curl(f'-XPOST http://{config.HOST}:2009/set_target -d \'{{"target": "{target}"}}\'')
-    elif isinstance(target, tuple):
+            return config.curl(f'-XPOST http://{config.HOST}:2009/set_target -d \'{{"target": "{st_name}"}}\'')
+    elif isinstance(target, (tuple, list)):
         tx, ty = target
         # set coordinate target
         return config.curl(f'-XPOST http://{config.HOST}:2009/set_target -d \'{{"target": {{"x": {tx}, "y": {ty}}}}}\'')
@@ -41,7 +39,7 @@ def fly_to(target):
         station_name = config.normalize_station(target)
         tx, ty = config.STATIONS.get(station_name, (0, 0))
         target_name = station_name
-    elif isinstance(target, tuple):
+    elif isinstance(target, (tuple, list)):
         tx, ty = target
         target_name = f"({tx}, {ty})"
     else:
@@ -65,23 +63,34 @@ def fly_to(target):
         return
 
     print(f"Setting autopilot to {target_name}...")
-    set_target(target)
+    res = set_target(target)
+    if isinstance(res, dict) and res.get("kind") == "error":
+        print(f"Autopilot error: {res.get('message', 'Failed to set target')}")
+        return
 
-    while True:
-        # get ship position
-        pos_data = config.curl(f"http://{config.HOST}:2011/pos")
-        if isinstance(pos_data, dict):
-            pos = pos_data.get("pos", {})
-            cx, cy = pos.get("x", 0), pos.get("y", 0)
-            dist = math.hypot(tx - cx, ty - cy)
-            print(f"Position: ({cx:.1f}, {cy:.1f}) | Distance to {target_name}: {dist:.1f}   ", end="\r", flush=True)
+    try:
+        while True:
+            # get ship position
+            pos_data = config.curl(f"http://{config.HOST}:2011/pos")
+            if isinstance(pos_data, dict) and pos_data.get("kind") == "success":
+                pos = pos_data.get("pos", {})
+                cx, cy = pos.get("x", 0), pos.get("y", 0)
+                dist = math.hypot(tx - cx, ty - cy)
+                vel = pos_data.get("velocity", {})
+                speed = math.hypot(vel.get("x", 0), vel.get("y", 0))
+                print(f"Position: ({cx:.1f}, {cy:.1f}) | Speed: {speed:.1f} | Distance to {target_name}: {dist:.1f}      ", end="\r", flush=True)
 
-            # check docking reach
-            reach = config.curl(f"http://{config.HOST}:2011/stations_in_reach")
-            if (isinstance(reach, dict) and is_named_station and target_name in reach.get("stations", {})) or dist <= 25:
-                print(f"\nArrived at {target_name}! Stopping ship...")
-                stop_ship()
-                break
+                # check docking reach
+                reach = config.curl(f"http://{config.HOST}:2011/stations_in_reach")
+                if (isinstance(reach, dict) and is_named_station and target_name in reach.get("stations", {})) or dist <= 25:
+                    print(f"\nArrived at {target_name}! Stopping ship...")
+                    stop_ship()
+                    break
+
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print(f"\nFlight interrupted by user. Stopping ship...")
+        stop_ship()
 
 if __name__ == "__main__":
     import sys

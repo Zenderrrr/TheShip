@@ -39,7 +39,7 @@ THRUSTER_PORTS = {
 # execute regular curl command
 def curl(cmd, parse_json=True):
     clean_cmd = cmd.removeprefix("curl ")
-    res = subprocess.run(f"curl -s {clean_cmd}", shell=True, capture_output=True, text=True)
+    res = subprocess.run(f"curl -s --max-time 5 {clean_cmd}", shell=True, capture_output=True, text=True)
     out = res.stdout.strip() or res.stderr.strip()
     if parse_json and out:
         try:
