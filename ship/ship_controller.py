@@ -14,6 +14,7 @@ import nav
 import status
 import trade
 import thrusters
+import manual_control
 
 def interactive_menu():
     while True:
@@ -30,11 +31,12 @@ def interactive_menu():
         print("  [8]  💰 Buy Resources")
         print("  [9]  🏷️  Sell Resources")
         print("  [10] 🔥 Thruster Control")
+        print("  [11] 🕹️  Manual WASD Flight Control")
         print("  [0]  ❌ Exit Console")
         print("=" * 60)
 
         try:
-            choice = input("\nSelect option (0-10): ").strip()
+            choice = input("\nSelect option (0-11): ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nExiting.")
             break
@@ -97,12 +99,16 @@ def interactive_menu():
             elif tid_str.isdigit() and 1 <= int(tid_str) <= 5:
                 print(thrusters.set_thruster(int(tid_str), pct))
 
+        elif choice == "11":
+            manual_control.start_manual_control()
+
 
 def main():
     parser = argparse.ArgumentParser(description="The Ship — Master Controller")
 
     sub = parser.add_subparsers(dest="command", help="Command to run")
     sub.add_parser("menu", help="Interactive numbered menu")
+    sub.add_parser("manual", help="Interactive WASD manual flight control")
     sub.add_parser("status", help="Show ship status")
     sub.add_parser("cargo", help="Show cargo inventory")
     sub.add_parser("stations", help="Show nearby stations")
@@ -139,7 +145,9 @@ def main():
             status.print_status()
         return
 
-    if args.command == "status":
+    if args.command == "manual":
+        manual_control.start_manual_control()
+    elif args.command == "status":
         status.print_status()
     elif args.command == "cargo":
         print(json.dumps(status.get_cargo(), indent=2))

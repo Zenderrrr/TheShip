@@ -1,8 +1,34 @@
 #!/usr/bin/env python3
+import os
+import pathlib
 import subprocess
 import json
 
-HOST = "192.168.103.40"
+def _load_dotenv():
+    current_file = pathlib.Path(__file__).resolve()
+    candidates = [
+        pathlib.Path.cwd() / ".env",
+        current_file.parent / ".env",
+        current_file.parent.parent / ".env",
+    ]
+    for env_path in candidates:
+        if env_path.is_file():
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            k, v = k.strip(), v.strip().strip("'\"")
+                            if k not in os.environ:
+                                os.environ[k] = v
+            except Exception:
+                pass
+            break
+
+_load_dotenv()
+
+HOST = os.getenv("SHIP_HOST") or os.getenv("HOST") or "192.168.103.40"
 
 STATIONS = {
     "Core Station": (0, 0),
@@ -10,6 +36,7 @@ STATIONS = {
     "Vesta Station": (7000, 7000),
     "Elyse Terminal": (-70565, 72811),
     "Shangris Station": (4446, 4340),
+    "G-Station": (-19567, 16308),
 }
 
 STATION_ALIASES = {
@@ -29,11 +56,11 @@ STATION_ALIASES = {
 }
 
 THRUSTER_PORTS = {
-    1: 2003,  # Main Forward
-    2: 2004,  # Port Lateral
-    3: 2006,  # Starboard Lateral
-    4: 2007,  # Yaw / Attitude
-    5: 2008   # Retro / Braking
+    1: 2003,  # Main Forward Propulsion
+    2: 2004,  # Retro / Reverse / Braking Engine
+    3: 2006,  # Starboard Maneuvering Thruster
+    4: 2007,  # Yaw Right / Clockwise Turn
+    5: 2008   # Yaw Left / Counter-Clockwise Turn
 }
 
 # execute regular curl command
