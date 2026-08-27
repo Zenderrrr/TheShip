@@ -1,0 +1,157 @@
+================================================================================
+                      THE SHIP — OFFICIAL SYSTEM MANUAL & API
+================================================================================
+
+Welcome Commander! This manual contains the complete technical reference for
+controlling all ship subsystems, flight controls, trading, telemetry, dashboard
+widgets, and Kubernetes vendor management.
+
+Base Host: 192.168.103.40 (Accessible via WireGuard VPN)
+
+--------------------------------------------------------------------------------
+1. TELEMETRY & SENSORS
+--------------------------------------------------------------------------------
+Query your ship's real-time position, heading angle, and velocity vector.
+
+* Sensor Endpoint (Port 2011 / 2010):
+  $ curl http://192.168.103.40:2011/pos
+  Response:
+  {
+    "kind": "success",
+    "pos": { "x": 100.0, "y": 250.0, "angle": 45.0 },
+    "velocity": { "x": 1.2, "y": 3.4, "angle": 0.0 }
+  }
+
+--------------------------------------------------------------------------------
+2. NAVIGATION & AUTOPILOT (Port 2009)
+--------------------------------------------------------------------------------
+Set flight targets using station names, raw coordinates, or control states.
+
+* Fly to a Named Station:
+  $ curl -XPOST http://192.168.103.40:2009/set_target -d '{"target": "Core Station"}'
+  $ curl -XPOST http://192.168.103.40:2009/set_target -d '{"target": "Azura Station"}'
+  $ curl -XPOST http://192.168.103.40:2009/set_target -d '{"target": "Vesta Station"}'
+
+* Fly to Exact Coordinates (x, y):
+  $ curl -XPOST http://192.168.103.40:2009/set_target -d '{"target": {"x": 7000, "y": 7000}}'
+
+* Autopilot Modes:
+  $ curl -XPOST http://192.168.103.40:2009/set_target -d '{"target": "stop"}'   # Emergency brake
+  $ curl -XPOST http://192.168.103.40:2009/set_target -d '{"target": "idle"}'   # Drift mode
+
+--------------------------------------------------------------------------------
+3. MANUAL THRUSTERS & PROPULSION
+--------------------------------------------------------------------------------
+Direct individual control of ship thrusters (0% to 100% power).
+
+* Thruster Port Mapping:
+  - Port 2003: Main Engine / Thruster 1
+  - Port 2004: Port Thruster / Thruster 2
+  - Port 2006: Starboard Thruster / Thruster 3
+  - Port 2007: Maneuvering Thruster / Thruster 4
+  - Port 2008: Braking Thruster / Thruster 5
+
+* Setting Thrust:
+  $ curl -XPUT http://192.168.103.40:2003/thruster -d '{"thrust_percent": 100}'
+  $ curl -XPUT http://192.168.103.40:2003/thruster -d '{"thrust_percent": 0}'
+
+* Reading Thruster State:
+  $ curl http://192.168.103.40:2003/thruster
+  Response: {"kind": "success", "thrust_percent": 100}
+
+--------------------------------------------------------------------------------
+4. CARGO HOLD & ECONOMY (Port 2012)
+--------------------------------------------------------------------------------
+Inspect your current cargo inventory, credit balance, and hold capacity.
+
+* Cargo Status:
+  $ curl http://192.168.103.40:2012/hold
+  Response:
+  {
+    "kind": "success",
+    "hold": {
+      "resources": { "IRON": 10, "GOLD": 0 },
+      "credits": 550,
+      "hold_size": 40,
+      "hold_free": 30
+    }
+  }
+
+--------------------------------------------------------------------------------
+5. COMMERCE & TRADING (Port 2011)
+--------------------------------------------------------------------------------
+Trade resources with nearby stations.
+
+* Check Stations in Reach:
+  $ curl http://192.168.103.40:2011/stations_in_reach
+  Response:
+  {
+    "kind": "success",
+    "stations": {
+      "Core Station": {
+        "resources": { "IRON": { "buy_price": 50, "sell_price": 40 } }
+      }
+    }
+  }
+
+* Buy Resources:
+  $ curl -XPOST http://192.168.103.40:2011/buy -d '{"station": "Azura Station", "what": "IRON", "amount": 5}'
+
+* Sell Resources:
+  $ curl -XPOST http://192.168.103.40:2011/sell -d '{"station": "Core Station", "what": "IRON", "amount": 5}'
+
+--------------------------------------------------------------------------------
+6. LIVE DASHBOARD & CUSTOM WIDGETS (Port 2002)
+--------------------------------------------------------------------------------
+Your personal web dashboard communicates over a raw TCP socket on Port 2002.
+Messages are JSON objects terminated by a null-byte (\0).
+
+* Protocol Messages:
+  1. 'update_widget': Registers or updates a widget on your live web UI.
+  2. 'update_doc': Updates the documentation tab in your web interface.
+  3. 'keepalive': Sent in response to null bytes to maintain socket connection.
+
+* Example Widget Message:
+  {
+    "kind": "update_widget",
+    "widget": {
+      "title": "Ship Navigation",
+      "group": "navigation",
+      "width": 2,
+      "height": 2,
+      "content": {
+        "kind": "text",
+        "text": "Current Target: Vesta Station\nPosition: (7000, 7000)"
+      }
+    }
+  }
+
+--------------------------------------------------------------------------------
+7. KUBERNETES VENDOR MANAGEMENT (Port 6443)
+--------------------------------------------------------------------------------
+The ship backend resources are orchestrated under the 'theship-vendor' namespace.
+
+* View All Deployed Pods & Services:
+  $ kubectl --kubeconfig=~/.kube/config get all -n theship-vendor
+
+* ~/.kube/config:
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJlRENDQVIyZ0F3SUJBZ0lCQURBS0JnZ3Foa2pPUFFRREFqQWpNU0V3SHdZRFZRUUREQmhyTTNNdGMyVnkKZG1WeUxXTmhRREUzT0RZM01URTJNamN3SGhjTk1qWXdPREUwTVRJME56QTNXaGNOTXpZd09ERXhNVEkwTnpBMwpXakFqTVNFd0h3WURWUVFEREJock0zTXRjMlZ5ZG1WeUxXTmhRREUzT0RZM01URTJNamN3V1RBVEJnY3Foa2pPClBRSUJCZ2dxaGtqT1BRTUJCd05DQUFRNjNzZkpSWkE1T2IzNEtGQUsva3Nza2xpWlhtZTVJWUJPSlRiSno0UDIKN05WNFJWaWE5ZS9sUE5wMHU2eXpFazF4WWdOOHlpWnhaMEpSZXhOM1RNNU1vMEl3UURBT0JnTlZIUThCQWY4RQpCQU1DQXFRd0R3WURWUjBUQVFIL0JBVXdBd0VCL3pBZEJnTlZIUTRFRmdRVVJHazlaMlcyWWJNWWVCdms1MG5CCkkreUhqSXN3Q2dZSUtvWkl6ajBFQXdJRFNRQXdSZ0loQUxkSFRwb1dMMm1rMlZjQ3N4ZmhBZFZpYnErZkZOZHEKMDd2b05wOW5yWHgzQWlFQTI3c2FGRGVuMng2YVRYTmdkMGtadW1scTFjRGlDR21ScHh3dWZmNnByTk09Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+    server: https://192.168.103.40:6443
+  name: default
+contexts:
+- context:
+    cluster: default
+    user: default
+  name: default
+current-context: default
+kind: Config
+preferences: {}
+users:
+- name: default
+  user:
+    client-certificate-data: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJrVENDQVRlZ0F3SUJBZ0lJWHZMUTZpcE1XZmN3Q2dZSUtvWkl6ajBFQXdJd0l6RWhNQjhHQTFVRUF3d1kKYXpOekxXTnNhV1Z1ZEMxallVQXhOemcyTnpFeE5qSTNNQjRYRFRJMk1EZ3hOREV5TkRjd04xb1hEVEkzTURneApOREV5TkRjd04xb3dNREVYTUJVR0ExVUVDaE1PYzNsemRHVnRPbTFoYzNSbGNuTXhGVEFUQmdOVkJBTVRESE41CmMzUmxiVHBoWkcxcGJqQlpNQk1HQnlxR1NNNDlBZ0VHQ0NxR1NNNDlBd0VIQTBJQUJMNXh2QkEvSnczM1k3SXAKN0lUYWpTWmRMWC8ybGFhSFI3SnYxWVVmT01tNUZYcUljK2pieVA2YTR1VUdDS204ZTJvMnFsZUlXUWxIWnNnTgozdEs0cFFhalNEQkdNQTRHQTFVZER3RUIvd1FFQXdJRm9EQVRCZ05WSFNVRUREQUtCZ2dyQmdFRkJRY0RBakFmCkJnTlZIU01FR0RBV2dCVENSczdydVFZQmpTTHRnT21CTjlPK2dIUVU2akFLQmdncWhrak9QUVFEQWdOSUFEQkYKQWlCMFQyMWc4Ky9uVVA1Q1pCbmZIRUlNbmloMU1qRUt2UTZiMkdFYmJ3NHhDd0loQUxseDlCQ3RhS0ZCNWJuNgoxZldZbHBHeHkrZ1dvNkxmcklzU2pnODVtZ3VGCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0KLS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUJlRENDQVIyZ0F3SUJBZ0lCQURBS0JnZ3Foa2pPUFFRREFqQWpNU0V3SHdZRFZRUUREQmhyTTNNdFkyeHAKWlc1MExXTmhRREUzT0RZM01URTJNamN3SGhjTk1qWXdPREUwTVRJME56QTNXaGNOTXpZd09ERXhNVEkwTnpBMwpXakFqTVNFd0h3WURWUVFEREJock0zTXRZMnhwWlc1MExXTmhRREUzT0RZM01URTJNamN3V1RBVEJnY3Foa2pPClBRSUJCZ2dxaGtqT1BRTUJCd05DQUFSUERtdXg3eGpwTXdwWUtad0ZPSmwzallvdFNXT3F4UkVQOTVWaTNGV1gKZHl5U2NRckZzS2hPTVdBVUZ1cmFuSHV0QTZVNkR5R1lLODlrdFcvdFVqV1hvMEl3UURBT0JnTlZIUThCQWY4RQpCQU1DQXFRd0R3WURWUjBUQVFIL0JBVXdBd0VCL3pBZEJnTlZIUTRFRmdRVXdrYk82N2tHQVkwaTdZRHBnVGZUCnZvQjBGT293Q2dZSUtvWkl6ajBFQXdJRFNRQXdSZ0loQU8vbEJZVVd1S2o0R0s1U3B1cm4zOVhmZWdkVlZMeWYKWWdYWnIwbld1ZG1oQWlFQTR4QXNFRjVhNjRlQ05MY3dqRVM1NEhvdDVZRGVVV0NvNTI3a3k4VTZlbXc9Ci0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K
+    client-key-data: LS0tLS1CRUdJTiBFQyBQUklWQVRFIEtFWS0tLS0tCk1IY0NBUUVFSUxmbEc2NStXeHJNQzlrZXdLNHl1TFRNQU1oK0c4Nkd4RUk4T0V0VFJDd1dvQW9HQ0NxR1NNNDkKQXdFSG9VUURRZ0FFdm5HOEVEOG5EZmRqc2luc2hOcU5KbDB0Zi9hVnBvZEhzbS9WaFI4NHlia1Zlb2h6Nk52SQovcHJpNVFZSXFieDdhamFxVjRoWkNVZG15QTNlMHJpbEJnPT0KLS0tLS1FTkQgRUMgUFJJVkFURSBLRVktLS0tLQo=
+================================================================================
