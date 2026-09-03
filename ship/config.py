@@ -1,34 +1,17 @@
 #!/usr/bin/env python3
 import os
 import pathlib
-import subprocess
-import json
 
-def _load_dotenv():
-    current_file = pathlib.Path(__file__).resolve()
-    candidates = [
-        pathlib.Path.cwd() / ".env",
-        current_file.parent / ".env",
-        current_file.parent.parent / ".env",
-    ]
-    for env_path in candidates:
-        if env_path.is_file():
-            try:
-                with open(env_path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("#") and "=" in line:
-                            k, v = line.split("=", 1)
-                            k, v = k.strip(), v.strip().strip("'\"")
-                            if k not in os.environ:
-                                os.environ[k] = v
-            except Exception:
-                pass
-            break
+for p in [pathlib.Path.cwd() / ".env", pathlib.Path(__file__).parent / ".env", pathlib.Path(__file__).parent.parent / ".env"]:
+    if p.is_file():
+        with open(p) as f:
+            for line in f:
+                if "=" in line and not line.strip().startswith("#"):
+                    k, v = line.strip().split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+        break
 
-_load_dotenv()
-
-HOST = os.getenv("SHIP_HOST") or os.getenv("HOST") or "192.168.103.40"
+HOST = os.getenv("SHIP_HOST", os.getenv("HOST", "127.0.0.1"))
 
 STATIONS = {
     "Core Station": (0, 0),
@@ -39,43 +22,16 @@ STATIONS = {
     "G-Station": (-19567, 16308),
 }
 
-STATION_ALIASES = {
-    "1": "Core Station",
-    "core": "Core Station",
-    "corestation": "Core Station",
-    "2": "Azura Station",
-    "azura": "Azura Station",
-    "azurastation": "Azura Station",
-    "3": "Vesta Station",
-    "vesta": "Vesta Station",
-    "vestastation": "Vesta Station",
-    "4": "Elyse Terminal",
-    "elyse": "Elyse Terminal",
-    "5": "Shangris Station",
-    "shangris": "Shangris Station",
+ALIASES = {
+    "1": "Core Station", "core": "Core Station",
+    "2": "Azura Station", "azura": "Azura Station",
+    "3": "Vesta Station", "vesta": "Vesta Station",
+    "4": "Elyse Terminal", "elyse": "Elyse Terminal",
+    "5": "Shangris Station", "shangris": "Shangris Station",
+    "6": "G-Station", "g-station": "G-Station", "g": "G-Station"
 }
 
-THRUSTER_PORTS = {
-    1: 2003,  # Main Forward Propulsion
-    2: 2004,  # Retro / Reverse / Braking Engine
-    3: 2006,  # Starboard Maneuvering Thruster
-    4: 2007,  # Yaw Right / Clockwise Turn
-    5: 2008   # Yaw Left / Counter-Clockwise Turn
-}
+THRUSTERS = {1: 2003, 2: 2004, 3: 2006, 4: 2007, 5: 2008}
 
-# execute regular curl command
-def curl(cmd, parse_json=True):
-    clean_cmd = cmd.removeprefix("curl ")
-    res = subprocess.run(f"curl -s --max-time 5 {clean_cmd}", shell=True, capture_output=True, text=True)
-    out = res.stdout.strip() or res.stderr.strip()
-    if parse_json and out:
-        try:
-            return json.loads(out)
-        except Exception:
-            pass
-    return out
-
-# normalize station name alias
 def normalize_station(name):
-    clean = str(name).strip().lower()
-    return STATION_ALIASES.get(clean, str(name).strip())
+    return ALIASES.get(str(name).strip().lower(), str(name).strip())

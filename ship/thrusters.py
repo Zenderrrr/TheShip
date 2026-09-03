@@ -1,22 +1,14 @@
 #!/usr/bin/env python3
-import json
 import config
+import nav
 
-# set power on a specific thruster (1-5)
 def set_thruster(thruster_id, percent):
-    port = config.THRUSTER_PORTS.get(int(thruster_id))
-    if not port:
-        return {"error": f"Invalid thruster ID {thruster_id}"}
-    payload = json.dumps({"thrust_percent": int(percent)})
-    # send thruster command
-    return config.curl(f'-XPUT http://{config.HOST}:{port}/thruster -H "Content-Type: application/json" -d \'{payload}\'')
+    port = config.THRUSTERS.get(int(thruster_id))
+    if not port: return {"error": f"Invalid thruster {thruster_id}"}
+    return nav._http(port, "thruster", "PUT", {"thrust_percent": int(percent)})
 
-# set power on all thrusters
 def set_all(percent):
-    results = {}
-    for tid in config.THRUSTER_PORTS:
-        results[tid] = set_thruster(tid, percent)
-    return results
+    return {tid: set_thruster(tid, percent) for tid in config.THRUSTERS}
 
 if __name__ == "__main__":
     import sys
