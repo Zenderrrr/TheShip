@@ -1,134 +1,235 @@
 #!/usr/bin/env python3
 """
 ================================================================================
-          THE SHIP — G-STATION 3-4 60-SECOND TETHER & CONTACT TRACKER
+     THE SHIP — DIRECT RABBITMQ SCANNER AUTOPILOT PURSUIT (60s)
 ================================================================================
-Monitors and logs contact with the moving 'G-Station 3-4' until reaching
-the required 60-second threshold.
 """
 
 import time
 import math
 import sys
 import os
+import threading
+import json
+import urllib.request
+import urllib.parse
+import base64
+import socket
 
-# Add script directory to python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 import nav
 
-TARGET_STATION = "G-Station 3-4"
-REQUIRED_SECONDS = 60
-STAGING_COORDS = (-19567, 16308)
+REQUIRED_SECONDS = 60.0
+
+lock = threading.Lock()
+scanner_target = {
+    "name": "Searching for G-Station 3-4...",
+    "x": None,
+    "y": None,
+    "vx": 0.0,
+    "vy": 0.0,
+    "last_updated": 0,
+    "total_msgs": 0
+}
+
+def start_port_2014_bridge():
+    """Background TCP forwarder: 0.0.0.0:2014 -> 127.0.0.1:5672."""
+    def forward(src, dst):
+        try:
+            while True:
+                data = src.recv(4096)
+                if not data: break
+                dst.sendall(data)
+        except Exception:
+            pass
+        finally:
+            src.close()
+            dst.close()
+
+    def handle(client):
+        try:
+            target = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            target.connect(('127.0.0.1', 5672))
+            threading.Thread(target=forward, args=(client, target), daemon=True).start()
+            threading.Thread(target=forward, args=(target, client), daemon=True).start()
+        except Exception:
+            client.close()
+
+    def server_loop():
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            srv.bind(('0.0.0.0', 2014))
+            srv.listen(128)
+            while True:
+                c, _ = srv.accept()
+                threading.Thread(target=handle, args=(c,), daemon=True).start()
+        except Exception:
+            pass
+
+    threading.Thread(target=server_loop, daemon=True).start()
+
+def rabbitmq_listener():
+    """Consumes live detected objects from RabbitMQ scanner/detected_objects."""
+    global scanner_target
+    auth = base64.b64encode(b'guest:guest').decode()
+    headers = {'Authorization': f'Basic {auth}', 'Content-Type': 'application/json'}
+
+    def api(ep, method='GET', data=None):
+        try:
+            req = urllib.request.Request(
+                f"http://127.0.0.1:15672/api/{ep}",
+                data=json.dumps(data).encode() if data else None,
+                headers=headers,
+                method=method
+            )
+            with urllib.request.urlopen(req, timeout=2) as r:
+                b = r.read().decode()
+                return json.loads(b) if b else {}
+        except Exception:
+            return None
+
+    vhost = urllib.parse.quote('/', safe='')
+    qname = f"chase_scanner_{int(time.time())}"
+    enc_q = urllib.parse.quote(qname, safe='')
+    exchange = urllib.parse.quote('scanner/detected_objects', safe='')
+
+    api(f"exchanges/{vhost}/{exchange}", "PUT", {"type": "fanout", "durable": False, "auto_delete": False})
+    api(f"queues/{vhost}/{enc_q}", "PUT", {"auto_delete": True, "durable": False})
+    api(f"bindings/{vhost}/e/{exchange}/q/{enc_q}", "POST", {"routing_key": ""})
+
+    last_x, last_y, last_t = None, None, None
+
+    while True:
+        try:
+            msgs = api(f"queues/{vhost}/{enc_q}/get", "POST", {
+                "count": 10,
+                "ackmode": "ack_requeue_false",
+                "encoding": "auto",
+                "truncate": 50000
+            })
+            if isinstance(msgs, list) and msgs:
+                for m in msgs:
+                    raw = m.get('payload', '')
+                    payload = json.loads(raw) if isinstance(raw, str) else raw
+                    items = payload if isinstance(payload, list) else [payload]
+                    for obj in items:
+                        name = obj.get('name') or obj.get('station') or ''
+                        if 'g-station' in name.lower() or '3-4' in name or 'station-g' in name.lower():
+                            pos = obj.get('pos', {})
+                            if 'x' in pos and 'y' in pos:
+                                now = time.time()
+                                px, py = float(pos['x']), float(pos['y'])
+                                vx, vy = 0.0, 0.0
+                                if last_x is not None and last_t and (now - last_t) > 0.01:
+                                    dt = now - last_t
+                                    vx = (px - last_x) / dt
+                                    vy = (py - last_y) / dt
+                                last_x, last_y, last_t = px, py, now
+
+                                with lock:
+                                    scanner_target["name"] = name
+                                    scanner_target["x"] = px
+                                    scanner_target["y"] = py
+                                    scanner_target["vx"] = vx
+                                    scanner_target["vy"] = vy
+                                    scanner_target["last_updated"] = now
+                                    scanner_target["total_msgs"] += 1
+        except Exception:
+            pass
+        time.sleep(0.05)
 
 def main():
-    print("=" * 70)
-    print("      🛰️  THE SHIP — G-STATION 3-4 (60s PROXIMITY TRACKER)")
-    print("=" * 70)
-    print(f"Staging Location : G-Station {STAGING_COORDS}")
-    print(f"Target Object    : {TARGET_STATION}")
-    print(f"Target Duration  : {REQUIRED_SECONDS} seconds")
-    print("-" * 70)
+    print("=" * 72)
+    print("     🛰️  THE SHIP — DIRECT RABBITMQ AUTOPILOT PURSUIT (60s)")
+    print("=" * 72)
 
-    # 1. Check if already near staging coordinates
-    pos_data = config.curl(f"http://{config.HOST}:2011/pos")
-    if isinstance(pos_data, dict) and pos_data.get("kind") == "success":
-        pos = pos_data.get("pos", {})
-        dist = math.hypot(STAGING_COORDS[0] - pos.get("x", 0), STAGING_COORDS[1] - pos.get("y", 0))
-        if dist > 35:
-            print(f"🚀 Flying to G-Station staging coordinates {STAGING_COORDS}...")
-            nav.set_target(STAGING_COORDS)
-            while True:
-                p_data = config.curl(f"http://{config.HOST}:2011/pos")
-                if isinstance(p_data, dict) and p_data.get("kind") == "success":
-                    p = p_data.get("pos", {})
-                    d = math.hypot(STAGING_COORDS[0] - p.get("x", 0), STAGING_COORDS[1] - p.get("y", 0))
-                    sys.stdout.write(f"\rApproaching G-Station... Distance: {d:.1f} units   ")
-                    sys.stdout.flush()
-                    if d <= 25:
-                        print("\n✅ Arrived in position.")
-                        nav.stop_ship()
-                        break
-                time.sleep(0.5)
-        else:
-            print(f"✅ In position at G-Station ({pos.get('x'):.1f}, {pos.get('y'):.1f}).")
-            nav.stop_ship()
+    start_port_2014_bridge()
+    threading.Thread(target=rabbitmq_listener, daemon=True).start()
+    print("🐰 RabbitMQ telemetry subscriber active. Standing by for coordinates...")
 
-    total_accumulated = 0.0
-    current_streak = 0.0
-    last_contact_time = None
-    pass_count = 0
-    in_pass = False
+    while True:
+        with lock:
+            if scanner_target["x"] is not None:
+                break
+        time.sleep(0.2)
 
-    print(f"\n📡 Radar active. Monitoring for '{TARGET_STATION}' passes...")
-    print("-" * 70)
+    print(f"🎯 INITIAL LOCK: {scanner_target['name']} at ({scanner_target['x']:.1f}, {scanner_target['y']:.1f})")
+    print("🚀 Engaging Autopilot pursuit...\n")
+
+    streak = 0.0
+    last_in_reach = None
+    last_nav_update = 0
 
     try:
-        while total_accumulated < REQUIRED_SECONDS:
+        while streak < REQUIRED_SECONDS:
             now = time.time()
-            reach = config.curl(f"http://{config.HOST}:2011/stations_in_reach")
-            pos_data = config.curl(f"http://{config.HOST}:2011/pos")
+            reach = nav._http_get(2011, "stations_in_reach")
+            pos_data = nav._http_get(2011, "pos")
 
             p = pos_data.get("pos", {}) if isinstance(pos_data, dict) else {}
-            
-            contact = False
-            detected_name = None
+            v = pos_data.get("velocity", {}) if isinstance(pos_data, dict) else {}
+            sx, sy = p.get("x", 0.0), p.get("y", 0.0)
+            svx, svy = v.get("x", 0.0), v.get("y", 0.0)
+            cur_speed = math.hypot(svx, svy)
+
+            in_range = False
             if isinstance(reach, dict) and reach.get("kind") == "success":
                 st_dict = reach.get("stations", {})
-                for st in st_dict:
-                    if "g-station" in st.lower() or "3-4" in st:
-                        contact = True
-                        detected_name = st
+                for s in st_dict:
+                    if "g-station" in s.lower() or "3-4" in s or "station-g" in s.lower():
+                        in_range = True
                         break
 
-            if contact:
-                if not in_pass:
-                    pass_count += 1
-                    in_pass = True
-                    print(f"\n⚡ [{time.strftime('%H:%M:%S')}] Pass #{pass_count} STARTED! Contact with '{detected_name}'")
+            with lock:
+                tx = scanner_target["x"]
+                ty = scanner_target["y"]
+                tvx = scanner_target["vx"]
+                tvy = scanner_target["vy"]
+                t_age = now - scanner_target["last_updated"] if scanner_target["last_updated"] else 999
+                total_msgs = scanner_target["total_msgs"]
 
-                if last_contact_time is not None:
-                    dt = now - last_contact_time
-                    current_streak += dt
-                    total_accumulated += dt
-                last_contact_time = now
+            dist_to_station = math.hypot(tx - sx, ty - sy) if (tx is not None) else 999.0
 
-                pct = min(100.0, (total_accumulated / REQUIRED_SECONDS) * 100)
-                filled = int(pct / 100 * 25)
-                bar = "█" * filled + "░" * (25 - filled)
-                
+            if tx is not None and ty is not None and t_age < 3.0:
+                lead_x = tx + tvx * 1.0
+                lead_y = ty + tvy * 1.0
+                if now - last_nav_update >= 0.25:
+                    nav.set_target((lead_x, lead_y))
+                    last_nav_update = now
+
+            if in_range:
+                streak += (now - last_in_reach) if last_in_reach else 0.1
+                last_in_reach = now
+
+                pct = min(100.0, streak / REQUIRED_SECONDS * 100)
+                bar = "█" * int(streak / REQUIRED_SECONDS * 20)
                 sys.stdout.write(
-                    f"\r🟢 IN CONTACT | Pass #{pass_count} Streak: {current_streak:.1f}s | "
-                    f"Total: [{bar}] {total_accumulated:.1f}/{REQUIRED_SECONDS}s ({pct:.0f}%)   "
+                    f"\r🟢 PURSUIT LOCKED | [{bar:<20}] {streak:.1f}/{REQUIRED_SECONDS:.0f}s ({pct:.0f}%) | "
+                    f"Dist: {dist_to_station:4.1f} | Ship Spd: {cur_speed:4.1f} | Target: ({tx:.0f}, {ty:.0f})   "
                 )
-                sys.stdout.flush()
             else:
-                if in_pass:
-                    print(f"\n🔴 [{time.strftime('%H:%M:%S')}] Pass #{pass_count} ENDED (Duration: {current_streak:.1f}s). Total so far: {total_accumulated:.1f}s / {REQUIRED_SECONDS}s")
-                    in_pass = False
-                    current_streak = 0.0
-
-                last_contact_time = None
-                pct = min(100.0, (total_accumulated / REQUIRED_SECONDS) * 100)
-                filled = int(pct / 100 * 25)
-                bar = "█" * filled + "░" * (25 - filled)
+                if streak > 0:
+                    print(f"\n🔴 Contact lost at {streak:.1f}s. Re-intercepting target...")
+                    streak = 0.0
+                last_in_reach = None
 
                 sys.stdout.write(
-                    f"\r⏳ STANDBY... | Passes: {pass_count} | "
-                    f"Total: [{bar}] {total_accumulated:.1f}/{REQUIRED_SECONDS}s ({pct:.0f}%) | "
-                    f"Ship: ({p.get('x', 0):.0f}, {p.get('y', 0):.0f})   "
+                    f"\r⚡ INTERCEPTING... Dist: {dist_to_station:4.1f} | Ship Spd: {cur_speed:4.1f} | "
+                    f"Target Pos: ({tx:.0f}, {ty:.0f}) [msgs: {total_msgs}]   "
                 )
-                sys.stdout.flush()
 
-            time.sleep(0.1)
+            sys.stdout.flush()
+            time.sleep(0.05)
 
-        print("\n" + "=" * 70)
-        print(f"🎉 MISSION ACCOMPLISHED! Reached {total_accumulated:.1f}s in proximity of {TARGET_STATION}!")
-        print("=" * 70)
+        print("\n" + "=" * 72)
+        print(f"🎉 60-SECOND CONTINUOUS CONTACT ACHIEVED ({streak:.1f}s)! Mission complete!")
+        print("=" * 72)
         nav.stop_ship()
 
     except KeyboardInterrupt:
-        print("\n\n⏹️ Tracker paused by user.")
+        print("\n\n⏹️ Pursuit stopped by user.")
         nav.stop_ship()
 
 if __name__ == "__main__":
