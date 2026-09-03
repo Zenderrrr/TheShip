@@ -15,6 +15,7 @@ import status
 import trade
 import thrusters
 import manual_control
+import dock
 
 def interactive_menu():
     while True:
@@ -32,11 +33,12 @@ def interactive_menu():
         print("  [9]  🏷️  Sell Resources")
         print("  [10] 🔥 Thruster Control")
         print("  [11] 🕹️  Manual WASD Flight Control")
+        print("  [12] 🧲 Attach / Lock to Station (Tether Mode)")
         print("  [0]  ❌ Exit Console")
         print("=" * 60)
 
         try:
-            choice = input("\nSelect option (0-11): ").strip()
+            choice = input("\nSelect option (0-12): ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nExiting.")
             break
@@ -102,6 +104,9 @@ def interactive_menu():
         elif choice == "11":
             manual_control.start_manual_control()
 
+        elif choice == "12":
+            dock.attach_to_station()
+
 
 def main():
     parser = argparse.ArgumentParser(description="The Ship — Master Controller")
@@ -109,6 +114,10 @@ def main():
     sub = parser.add_subparsers(dest="command", help="Command to run")
     sub.add_parser("menu", help="Interactive numbered menu")
     sub.add_parser("manual", help="Interactive WASD manual flight control")
+    
+    dock_p = sub.add_parser("attach", aliases=["dock"], help="Attach/lock to nearby station (tether mode)")
+    dock_p.add_argument("station", nargs="?", help="Station name to attach to (optional)", default=None)
+
     sub.add_parser("status", help="Show ship status")
     sub.add_parser("cargo", help="Show cargo inventory")
     sub.add_parser("stations", help="Show nearby stations")
@@ -147,6 +156,8 @@ def main():
 
     if args.command == "manual":
         manual_control.start_manual_control()
+    elif args.command in ("attach", "dock"):
+        dock.attach_to_station(args.station)
     elif args.command == "status":
         status.print_status()
     elif args.command == "cargo":
