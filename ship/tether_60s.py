@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 ================================================================================
-     THE SHIP — DIRECT RABBITMQ SCANNER AUTOPILOT PURSUIT (60s)
+     THE SHIP — CONTINUOUS RABBITMQ ESCORT & AUTOPILOT TRACKER (INFINITE)
 ================================================================================
 """
 
@@ -20,11 +20,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 import nav
 
-REQUIRED_SECONDS = 60.0
+TARGET_NAME = "G-Station 3-4"
 
 lock = threading.Lock()
 scanner_target = {
-    "name": "Searching for G-Station 3-4...",
+    "name": TARGET_NAME,
     "x": None,
     "y": None,
     "vx": 0.0,
@@ -71,7 +71,7 @@ def start_port_2014_bridge():
     threading.Thread(target=server_loop, daemon=True).start()
 
 def rabbitmq_listener():
-    """Consumes live detected objects from RabbitMQ scanner/detected_objects."""
+    """Strictly consumes only 'G-Station 3-4' from RabbitMQ scanner/detected_objects."""
     global scanner_target
     auth = base64.b64encode(b'guest:guest').decode()
     headers = {'Authorization': f'Basic {auth}', 'Content-Type': 'application/json'}
@@ -100,6 +100,7 @@ def rabbitmq_listener():
     api(f"bindings/{vhost}/e/{exchange}/q/{enc_q}", "POST", {"routing_key": ""})
 
     last_x, last_y, last_t = None, None, None
+    smooth_vx, smooth_vy = 0.0, 0.0
 
     while True:
         try:
@@ -115,55 +116,75 @@ def rabbitmq_listener():
                     payload = json.loads(raw) if isinstance(raw, str) else raw
                     items = payload if isinstance(payload, list) else [payload]
                     for obj in items:
-                        name = obj.get('name') or obj.get('station') or ''
-                        if 'g-station' in name.lower() or '3-4' in name or 'station-g' in name.lower():
+                        name = str(obj.get('name') or obj.get('station') or '').strip()
+                        
+                        if "3-4" in name or name.lower() == "g-station 3-4":
                             pos = obj.get('pos', {})
-                            if 'x' in pos and 'y' in pos:
+                            if isinstance(pos, dict) and 'x' in pos and 'y' in pos:
                                 now = time.time()
                                 px, py = float(pos['x']), float(pos['y'])
-                                vx, vy = 0.0, 0.0
-                                if last_x is not None and last_t and (now - last_t) > 0.01:
+                                
+                                if last_x is not None and last_t:
                                     dt = now - last_t
-                                    vx = (px - last_x) / dt
-                                    vy = (py - last_y) / dt
+                                    if dt > 0.01:
+                                        dist_jump = math.hypot(px - last_x, py - last_y)
+                                        if dist_jump < 300.0:
+                                            raw_vx = (px - last_x) / dt
+                                            raw_vy = (py - last_y) / dt
+                                            smooth_vx = 0.6 * raw_vx + 0.4 * smooth_vx
+                                            smooth_vy = 0.6 * raw_vy + 0.4 * smooth_vy
+                                
                                 last_x, last_y, last_t = px, py, now
 
                                 with lock:
                                     scanner_target["name"] = name
                                     scanner_target["x"] = px
                                     scanner_target["y"] = py
-                                    scanner_target["vx"] = vx
-                                    scanner_target["vy"] = vy
+                                    scanner_target["vx"] = smooth_vx
+                                    scanner_target["vy"] = smooth_vy
                                     scanner_target["last_updated"] = now
                                     scanner_target["total_msgs"] += 1
         except Exception:
             pass
-        time.sleep(0.05)
+        time.sleep(0.04)
+
+def format_time(seconds):
+    mins, secs = divmod(int(seconds), 60)
+    hrs, mins = divmod(mins, 60)
+    if hrs > 0:
+        return f"{hrs:02d}:{mins:02d}:{secs:02d}"
+    return f"{mins:02d}:{secs:02d}"
 
 def main():
     print("=" * 72)
-    print("     🛰️  THE SHIP — DIRECT RABBITMQ AUTOPILOT PURSUIT (60s)")
+    print("     🛰️  THE SHIP — CONTINUOUS 'G-STATION 3-4' ESCORT CONTROLLER")
     print("=" * 72)
+    print(f"Target Object : '{TARGET_NAME}' (Strict Single-Target Filter)")
+    print("Mode          : Continuous Infinite Escort (Ctrl+C to stop)")
+    print("-" * 72)
 
     start_port_2014_bridge()
     threading.Thread(target=rabbitmq_listener, daemon=True).start()
-    print("🐰 RabbitMQ telemetry subscriber active. Standing by for coordinates...")
+    print(f"🐰 Listening on RabbitMQ. Waiting for lock on '{TARGET_NAME}'...")
 
     while True:
         with lock:
             if scanner_target["x"] is not None:
                 break
-        time.sleep(0.2)
+        time.sleep(0.1)
 
-    print(f"🎯 INITIAL LOCK: {scanner_target['name']} at ({scanner_target['x']:.1f}, {scanner_target['y']:.1f})")
-    print("🚀 Engaging Autopilot pursuit...\n")
+    print(f"🎯 LOCKED ONTO {scanner_target['name']} at ({scanner_target['x']:.1f}, {scanner_target['y']:.1f})")
+    print("🚀 Autopilot continuous escort active...\n")
 
-    streak = 0.0
+    start_time = time.time()
+    total_locked_time = 0.0
+    current_streak = 0.0
+    best_streak = 0.0
     last_in_reach = None
     last_nav_update = 0
 
     try:
-        while streak < REQUIRED_SECONDS:
+        while True:
             now = time.time()
             reach = nav._http_get(2011, "stations_in_reach")
             pos_data = nav._http_get(2011, "pos")
@@ -178,7 +199,7 @@ def main():
             if isinstance(reach, dict) and reach.get("kind") == "success":
                 st_dict = reach.get("stations", {})
                 for s in st_dict:
-                    if "g-station" in s.lower() or "3-4" in s or "station-g" in s.lower():
+                    if "3-4" in s or "g-station 3-4" in s.lower():
                         in_range = True
                         break
 
@@ -190,46 +211,55 @@ def main():
                 t_age = now - scanner_target["last_updated"] if scanner_target["last_updated"] else 999
                 total_msgs = scanner_target["total_msgs"]
 
-            dist_to_station = math.hypot(tx - sx, ty - sy) if (tx is not None) else 999.0
+            dist_to_target = math.hypot(tx - sx, ty - sy) if (tx is not None) else 999.0
+
+            if dist_to_target < 12.0:
+                lead_t = 0.4
+            elif dist_to_target < 20.0:
+                lead_t = 0.75
+            else:
+                lead_t = 1.2
 
             if tx is not None and ty is not None and t_age < 3.0:
-                lead_x = tx + tvx * 1.0
-                lead_y = ty + tvy * 1.0
-                if now - last_nav_update >= 0.25:
+                lead_x = tx + tvx * lead_t
+                lead_y = ty + tvy * lead_t
+                if now - last_nav_update >= 0.15:
                     nav.set_target((lead_x, lead_y))
                     last_nav_update = now
 
             if in_range:
-                streak += (now - last_in_reach) if last_in_reach else 0.1
+                dt = (now - last_in_reach) if last_in_reach else 0.1
+                current_streak += dt
+                total_locked_time += dt
+                best_streak = max(best_streak, current_streak)
                 last_in_reach = now
 
-                pct = min(100.0, streak / REQUIRED_SECONDS * 100)
-                bar = "█" * int(streak / REQUIRED_SECONDS * 20)
                 sys.stdout.write(
-                    f"\r🟢 PURSUIT LOCKED | [{bar:<20}] {streak:.1f}/{REQUIRED_SECONDS:.0f}s ({pct:.0f}%) | "
-                    f"Dist: {dist_to_station:4.1f} | Ship Spd: {cur_speed:4.1f} | Target: ({tx:.0f}, {ty:.0f})   "
+                    f"\r🟢 ESCORT LOCKED | Streak: {format_time(current_streak)} (Best: {format_time(best_streak)}) | "
+                    f"Dist: {dist_to_target:4.1f} | Ship Spd: {cur_speed:4.1f} | Lead: {lead_t:.2f}s   "
                 )
             else:
-                if streak > 0:
-                    print(f"\n🔴 Contact lost at {streak:.1f}s. Re-intercepting target...")
-                    streak = 0.0
+                if current_streak > 0:
+                    print(f"\n🔴 Contact dropped (Streak: {format_time(current_streak)}). Re-intercepting '{TARGET_NAME}'...")
+                    current_streak = 0.0
                 last_in_reach = None
 
                 sys.stdout.write(
-                    f"\r⚡ INTERCEPTING... Dist: {dist_to_station:4.1f} | Ship Spd: {cur_speed:4.1f} | "
+                    f"\r⚡ INTERCEPTING... Dist: {dist_to_target:4.1f} | Ship Spd: {cur_speed:4.1f} | "
                     f"Target Pos: ({tx:.0f}, {ty:.0f}) [msgs: {total_msgs}]   "
                 )
 
             sys.stdout.flush()
-            time.sleep(0.05)
-
-        print("\n" + "=" * 72)
-        print(f"🎉 60-SECOND CONTINUOUS CONTACT ACHIEVED ({streak:.1f}s)! Mission complete!")
-        print("=" * 72)
-        nav.stop_ship()
+            time.sleep(0.04)
 
     except KeyboardInterrupt:
-        print("\n\n⏹️ Pursuit stopped by user.")
+        total_runtime = time.time() - start_time
+        print("\n\n" + "=" * 72)
+        print("🛑 ESCORT COMPLETED")
+        print(f"Total Runtime     : {format_time(total_runtime)}")
+        print(f"Total Locked Time : {format_time(total_locked_time)}")
+        print(f"Longest Streak    : {format_time(best_streak)}")
+        print("=" * 72)
         nav.stop_ship()
 
 if __name__ == "__main__":
