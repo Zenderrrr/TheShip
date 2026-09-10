@@ -1,32 +1,38 @@
-#!/usr/bin/env python3
+import sys
 import time
-import math
 import config
 import nav
 
-def attach_to_station(station_name=None):
-    st_name = config.normalize_station(station_name) if station_name else None
-    print(f"🧲 Locking onto {st_name or 'nearby station'} (Ctrl+C to un-dock)...")
+def hold_dock(station_name=None):
+    """Holds position near a target station."""
+    st = config.normalize_station(station_name) if station_name else None
+    print(f"Holding position at {st or 'nearby station'} (press Ctrl+C to stop)...")
+
     try:
         while True:
             reach = nav._http_get(2011, "stations_in_reach").get("stations", {})
-            if not st_name and reach:
-                st_name = list(reach.keys())[0]
-            
-            p = nav._http_get(2011, "pos").get("pos", {})
-            in_reach = st_name in reach if st_name else False
-            
+
+            # Latch onto any station in range if none specified
+            if not st and reach:
+                st = list(reach.keys())[0]
+
+            in_reach = st in reach if st else False
+            pos = nav._http_get(2011, "pos").get("pos", {})
+
             if in_reach:
-                print(f"\r🟢 LOCKED: {st_name} | Pos: ({p.get('x',0):.1f}, {p.get('y',0):.1f})   ", end="", flush=True)
+                print(f"\rDocked at {st} | Pos: ({pos.get('x', 0):.0f}, {pos.get('y', 0):.0f})", end="", flush=True)
             else:
-                print(f"\r⚡ RE-ACQUIRING: {st_name or 'Station'}...   ", end="", flush=True)
-                if st_name in config.STATIONS:
-                    nav.set_target(config.STATIONS[st_name])
-            time.sleep(0.2)
+                print(f"\rRe-aligning with {st or 'station'}...", end="", flush=True)
+                if st in config.STATIONS:
+                    nav.set_target(config.STATIONS[st])
+
+            time.sleep(0.5)
+
     except KeyboardInterrupt:
-        print(f"\n🛑 Un-docked from {st_name or 'station'}.")
+        print("\nStopped.")
+    finally:
         nav.stop_ship()
 
 if __name__ == "__main__":
-    import sys
-    attach_to_station(sys.argv[1] if len(sys.argv) > 1 else None)
+    target = sys.argv[1] if len(sys.argv) > 1 else None
+    hold_dock(target)
