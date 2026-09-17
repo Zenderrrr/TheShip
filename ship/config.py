@@ -11,8 +11,8 @@ for env_path in [pathlib.Path.cwd() / ".env", pathlib.Path(__file__).parent.pare
                     os.environ.setdefault(k.strip(), v.strip().strip("'\""))
         break
 
-# Spacecraft IP Address, loaded from .env
-HOST = os.getenv("SHIP_HOST")
+# Spacecraft IP Address
+HOST = os.getenv("SHIP_HOST") or os.getenv("HOST")
 
 # Known Station Coordinates (X, Y)
 STATIONS = {
