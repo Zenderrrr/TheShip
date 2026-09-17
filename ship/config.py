@@ -13,7 +13,7 @@ for env_path in [pathlib.Path.cwd() / ".env", pathlib.Path(__file__).parent.pare
         break
 
 # Spacecraft IP Address
-HOST = os.getenv("SHIP_HOST", host=config.HOST)
+HOST = os.getenv("SHIP_HOST", config.HOST)
 
 # Known Station Coordinates (X, Y)
 STATIONS = {
