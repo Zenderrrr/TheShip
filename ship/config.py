@@ -2,7 +2,7 @@ import os
 import pathlib
 
 # Load SHIP_HOST from .env file if present
-for env_path in [pathlib.Path.cwd() / ".env", pathlib.Path(__file__).parent / ".env", pathlib.Path(__file__).parent.parent / ".env"]:
+for env_path in [pathlib.Path.cwd() / ".env", pathlib.Path(__file__).parent.parent / ".env"]:
     if env_path.is_file():
         with open(env_path) as f:
             for line in f:
@@ -12,7 +12,7 @@ for env_path in [pathlib.Path.cwd() / ".env", pathlib.Path(__file__).parent / ".
         break
 
 # Spacecraft IP Address
-HOST = os.getenv("SHIP_HOST") or os.getenv("HOST")
+HOST = os.getenv("SHIP_HOST", "192.168.103.41")
 
 # Known Station Coordinates (X, Y)
 STATIONS = {
