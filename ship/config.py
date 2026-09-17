@@ -13,8 +13,6 @@ for env_path in [pathlib.Path.cwd() / ".env", pathlib.Path(__file__).parent / ".
 
 # Spacecraft IP Address
 HOST = os.getenv("SHIP_HOST") or os.getenv("HOST")
-if not HOST:
-    raise RuntimeError("SHIP_HOST/HOST not set — check that ship/.env exists and is being found.")
 
 # Known Station Coordinates (X, Y)
 STATIONS = {
