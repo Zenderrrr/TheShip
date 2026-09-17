@@ -2,7 +2,7 @@ import os
 import pathlib
 from dotenv import load_dotenv
 
-load_dotenv()
+
 
 # Load SHIP_HOST from .env file if present
 for env_path in [pathlib.Path.cwd() / ".env", pathlib.Path(__file__).parent.parent / ".env"]:
@@ -14,8 +14,10 @@ for env_path in [pathlib.Path.cwd() / ".env", pathlib.Path(__file__).parent.pare
                     os.environ.setdefault(k.strip(), v.strip().strip("'\""))
         break
 
+
+load_dotenv()
 # Spacecraft IP Address
-HOST = os.getenv("HOST")
+HOST = os.getenv("SHIP_HOST") or os.getenv("HOST")
 
 # Known Station Coordinates (X, Y)
 STATIONS = {
