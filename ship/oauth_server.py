@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import secrets
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+from dotenv import load_dotenv
+
 PORT = 2015
 
 CLIENT_ID = "laser"
-CLIENT_SECRET = "ship_secret"  # muss identisch beim /configure_oauth des Lasers sein
+CLIENT_SECRET = os.environ[
+    "CLIENT_SECRET"
+]  # muss identisch beim /configure_oauth des Lasers sein
 
 CODE_TTL_S = 60  # Authorization Codes sind nur kurz gueltig
 TOKEN_TTL_S = 3600  # Access Tokens 1h gueltig
 
 # Einfache "Benutzerdatenbank" fuer diese Uebung (in echt: Hashes, nicht Klartext!)
-USERS = {
-    "technician": "laser123",
-}
+USERS = {os.environ["LASER_USERNAME"]: os.environ["LASER_PASSWORD"]}
 
 # In-Memory Speicher fuer ausgestellte Codes und Tokens
 issued_codes = {}  # code -> {client_id, redirect_uri, expires_at, used}
