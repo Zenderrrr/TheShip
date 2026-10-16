@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from dotenv import load_dotenv
 
+load_dotenv()
 PORT = 2015
 
 CLIENT_ID = "laser"
