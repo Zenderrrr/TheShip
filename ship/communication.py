@@ -65,7 +65,7 @@ class Communication:
 
             self.sent += 1
 
-            print("[VM -> VM]", message)
+            print(f"[VM -> VM] Nachricht {self.sent} gesendet")
 
             return True
 
@@ -98,7 +98,7 @@ class Communication:
 
                 self.received += 1
 
-                print("[VM EMPFANGEN]", message)
+                print(f"[VM EMPFANGEN] Nachricht {self.received}")
 
                 await self.queue.put(message)
 
@@ -137,7 +137,7 @@ class Communication:
 
                 self.forwarded += 1
 
-                print(f"[AN {self.config['name']}]", outgoing)
+                print(f"[AN {self.config['name']}] Nachricht weitergeleitet")
 
             except Exception as error:
                 print("[STATION SENDEFEHLER]", error)
@@ -165,7 +165,7 @@ class Communication:
                     print(f"[{self.config['name']}] VERBUNDEN!")
 
                     async for raw in ws:
-                        print("[WEBSOCKET RAW]", raw)
+                        # print("[WEBSOCKET RAW]", raw)
 
                         try:
                             message = json.loads(raw)
