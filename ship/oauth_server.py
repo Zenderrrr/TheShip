@@ -15,26 +15,31 @@ PORT = 2015
 CLIENT_ID = "laser"
 CLIENT_SECRET = os.environ[
     "CLIENT_SECRET"
-]  # muss identisch beim /configure_oauth des Lasers sein
+]
 
-CODE_TTL_S = 60  # Authorization Codes sind nur kurz gueltig
-TOKEN_TTL_S = 3600  # Access Tokens 1h gueltig
+CODE_TTL_S = 60
+TOKEN_TTL_S = 3600
 
-# Einfache "Benutzerdatenbank" fuer diese Uebung (in echt: Hashes, nicht Klartext!)
 USERS = {os.environ["LASER_USERNAME"]: os.environ["LASER_PASSWORD"]}
 
-# In-Memory Speicher fuer ausgestellte Codes und Tokens
-issued_codes = {}  # code -> {client_id, redirect_uri, expires_at, used}
-issued_tokens = {}  # token -> {client_id, expires_at}
+issued_codes = {}
+
+issued_tokens = {}
 
 
 def make_login_page(client_id, redirect_uri, state, error=None):
+    """
+    Erstellt das HTML-Login-Formular.
+    WICHTIG: client_id, redirect_uri und state werden als versteckte Felder (<input type="hidden">)
+    mitgefuehrt, damit sie beim Abschicken (POST) nicht verloren gehen.
+    """
     error_html = f'<p style="color:red">{error}</p>' if error else ""
     return f"""
     <html><body>
       <h2>Login - Zugriff auf den Laser</h2>
       {error_html}
       <form method="POST" action="/authorize">
+        <!-- Versteckte OAuth-Parameter bleiben erhalten -->
         <input type="hidden" name="client_id" value="{client_id}">
         <input type="hidden" name="redirect_uri" value="{redirect_uri}">
         <input type="hidden" name="state" value="{state}">
@@ -47,10 +52,6 @@ def make_login_page(client_id, redirect_uri, state, error=None):
 
 
 class OAuthHandler(BaseHTTPRequestHandler):
-    # ---------------------------------------------------------
-    # GET /authorize?client_id=...&redirect_uri=...&response_type=code&state=...
-    # Zeigt das Login-Formular an (Schritt 1 des Flows).
-    # ---------------------------------------------------------
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
 
@@ -60,20 +61,18 @@ class OAuthHandler(BaseHTTPRequestHandler):
             redirect_uri = params.get("redirect_uri", [""])[0]
             state = params.get("state", [""])[0]
 
+            # Sicherheitspruefung: Gehoert die Anfrage dem registrierten Laser?
             if client_id != CLIENT_ID or not redirect_uri:
                 self.send_error(400, "ungueltiger client_id oder redirect_uri")
                 return
 
+            # Zeige dem Benutzer das Login-Formular an
             self._respond_html(make_login_page(client_id, redirect_uri, state))
             return
 
         self.send_response(404)
         self.end_headers()
 
-    # ---------------------------------------------------------
-    # POST /authorize  -> Login-Formular wurde abgeschickt (Schritt 2)
-    # POST /token      -> Code gegen Access Token tauschen (Schritt 3)
-    # ---------------------------------------------------------
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         length = int(self.headers.get("Content-Length", 0))
@@ -87,6 +86,7 @@ class OAuthHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
+
     def _handle_login_submit(self, raw_body):
         params = urllib.parse.parse_qs(raw_body)
         client_id = params.get("client_id", [""])[0]
@@ -95,7 +95,7 @@ class OAuthHandler(BaseHTTPRequestHandler):
         username = params.get("username", [""])[0]
         password = params.get("password", [""])[0]
 
-        # Echte Zugangsdatenpruefung statt automatischem Durchwinken
+        # 1. Authentifizierung: Pruefen ob Benutzer & Passwort stimmen
         if USERS.get(username) != password:
             self._respond_html(
                 make_login_page(
@@ -104,15 +104,16 @@ class OAuthHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # Zufaelligen, einmal gueltigen Code ausstellen
+        # 2. Zufaelligen, kryptographisch sicheren Authorization Code ausstellen
         code = secrets.token_urlsafe(24)
         issued_codes[code] = {
             "client_id": client_id,
             "redirect_uri": redirect_uri,
             "expires_at": time.time() + CODE_TTL_S,
-            "used": False,
+            "used": False,  # Einmalig gueltig!
         }
 
+        # 3. HTTP 302 Found: Leite den Browser zur redirect_uri zurueck mit dem Code
         redirect_target = (
             f"{redirect_uri}?code={code}&state={urllib.parse.quote(state)}"
         )
@@ -128,36 +129,44 @@ class OAuthHandler(BaseHTTPRequestHandler):
         client_id = params.get("client_id", [""])[0]
         client_secret = params.get("client_secret", [""])[0]
 
+        # 1. Pruefen: Ist der Flow "authorization_code"?
         if grant_type != "authorization_code":
             self._respond_error(400, "unsupported_grant_type")
             return
 
+        # 2. Client-Authentifizierung: Kennt der Laser das geheime CLIENT_SECRET?
         if client_id != CLIENT_ID or client_secret != CLIENT_SECRET:
             self._respond_error(401, "invalid_client")
             return
 
+        # 3. Pruefung des Authorization Codes (4 Sicherheits-Checks):
         entry = issued_codes.get(code)
         if entry is None:
             self._respond_error(400, "invalid_grant (unbekannter code)")
             return
         if entry["used"]:
+            # Replay-Angriff verhindern: Code darf nur genau einmal benutzt werden!
             self._respond_error(400, "invalid_grant (code bereits verwendet)")
             return
         if time.time() > entry["expires_at"]:
             self._respond_error(400, "invalid_grant (code abgelaufen)")
             return
         if entry["redirect_uri"] != redirect_uri:
+            # Verhindert, dass ein Angreifer den Code an eine andere URL umlenkt
             self._respond_error(400, "invalid_grant (redirect_uri stimmt nicht)")
             return
 
-        entry["used"] = True  # Code ist nur einmal gueltig
+        # Code sofort als 'verwendet' markieren
+        entry["used"] = True
 
+        # 4. Access Token erstellen (kryptographischer Schluessel)
         access_token = secrets.token_urlsafe(32)
         issued_tokens[access_token] = {
             "client_id": client_id,
             "expires_at": time.time() + TOKEN_TTL_S,
         }
 
+        # 5. Access Token als JSON an das Laser-Subsystem zurueckgeben
         payload = json.dumps(
             {
                 "access_token": access_token,
@@ -188,9 +197,13 @@ class OAuthHandler(BaseHTTPRequestHandler):
         pass
 
 
+# =============================================================================
+# SCHRITT 4 (VALIDIERUNG DURCH RESOURCE SERVER):
+# Diese Funktion zeigt, wie ein Resource Server (hier der Laser) pruefen kann,
+# ob ein uebergebenes Token noch aktiv ist.
+# =============================================================================
 def is_token_valid(token):
-    """Hilfsfunktion, falls ein Resource Server (z.B. der Laser selbst)
-    Tokens hier validieren will/koennte."""
+    """Prueft ob ein uebergebenes Token existiert und noch nicht abgelaufen ist."""
     entry = issued_tokens.get(token)
     return entry is not None and time.time() <= entry["expires_at"]
 
