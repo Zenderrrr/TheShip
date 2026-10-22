@@ -4,25 +4,29 @@ import argparse
 import asyncio
 import json
 import time
+import uuid
 
 import websockets
 
-PORT = 5000
+# ==========================================
+# KONFIGURATION
+# ==========================================
+
+TCP_PORT = 5000
+INTERVAL = 2
 
 STATIONS = {
     "elyse": {
         "name": "Elyse Terminal",
         "url": "ws://127.0.0.1:2026/api",
-        "incoming_field": "msg",
-        "outgoing_field": "msg",
-        "other_station": "Shangris Station",
+        "field": "msg",
+        "other": "Shangris Station",
     },
     "shangris": {
         "name": "Shangris Station",
         "url": "ws://127.0.0.1:2025/ws",
-        "incoming_field": "data",
-        "outgoing_field": "data",
-        "other_station": "Elyse Terminal",
+        "field": "data",
+        "other": "Elyse Terminal",
     },
 }
 
@@ -32,22 +36,25 @@ class Communication:
         self.station = station
         self.peer = peer
         self.config = STATIONS[station]
+
         self.websocket = None
 
         self.sent = 0
         self.received = 0
+        self.forwarded = 0
+
         self.start_time = time.time()
+
+        self.queue = asyncio.Queue()
 
     # ==========================================
     # NACHRICHT AN ANDERE VM SENDEN
     # ==========================================
 
     async def send_to_peer(self, message):
+
         try:
-            reader, writer = await asyncio.open_connection(
-                self.peer,
-                PORT,
-            )
+            reader, writer = await asyncio.open_connection(self.peer, TCP_PORT)
 
             writer.write((json.dumps(message) + "\n").encode("utf-8"))
 
@@ -58,16 +65,20 @@ class Communication:
 
             self.sent += 1
 
-            print(f"[VM -> VM] Nachricht {self.sent}: {message}")
+            print("[VM -> VM]", message)
+
+            return True
 
         except Exception as error:
             print("[VM SENDEFEHLER]", error)
+            return False
 
     # ==========================================
     # NACHRICHT VON ANDERER VM EMPFANGEN
     # ==========================================
 
     async def handle_client(self, reader, writer):
+
         try:
             while True:
                 raw = await reader.readline()
@@ -77,11 +88,19 @@ class Communication:
 
                 message = json.loads(raw.decode("utf-8"))
 
+                if message.get("type") == "heartbeat":
+                    print("[HEARTBEAT] Partner erreichbar")
+                    continue
+
+                if message.get("type") != "station_message":
+                    print("[UNBEKANNT]", message)
+                    continue
+
                 self.received += 1
 
-                print(f"[VM EMPFANGEN] Nachricht {self.received}: {message}")
+                print("[VM EMPFANGEN]", message)
 
-                await self.send_to_station(message)
+                await self.queue.put(message)
 
         except Exception as error:
             print("[TCP FEHLER]", error)
@@ -91,32 +110,47 @@ class Communication:
             await writer.wait_closed()
 
     # ==========================================
-    # NACHRICHT AN RAUMSTATION SENDEN
+    # NACHRICHT AN STATION SENDEN
     # ==========================================
 
-    async def send_to_station(self, message):
+    async def station_sender(self):
 
-        if self.websocket is None:
-            print("[WARNUNG] Station nicht verbunden")
-            return
+        while True:
+            message = await self.queue.get()
 
-        field = self.config["outgoing_field"]
+            try:
+                while self.websocket is None:
+                    print("[WARTEN] WebSocket nicht verbunden")
+                    await asyncio.sleep(1)
 
-        outgoing = {
-            "source": self.config["other_station"],
-            field: message["payload"],
-        }
+                # Nur Nachrichten für diese Station
+                if message.get("destination") != self.config["name"]:
+                    print("[IGNORIERT] Falsches Ziel")
+                    continue
 
-        try:
-            await self.websocket.send(json.dumps(outgoing))
+                outgoing = {
+                    "source": message["source"],
+                    self.config["field"]: message["payload"],
+                }
 
-            print(f"[AN {self.config['name']}] {outgoing}")
+                await self.websocket.send(json.dumps(outgoing))
 
-        except Exception as error:
-            print("[STATION SENDEFEHLER]", error)
+                self.forwarded += 1
+
+                print(f"[AN {self.config['name']}]", outgoing)
+
+            except Exception as error:
+                print("[STATION SENDEFEHLER]", error)
+
+                # Bei Verbindungsfehler erneut versuchen
+                await self.queue.put(message)
+                await asyncio.sleep(2)
+
+            finally:
+                self.queue.task_done()
 
     # ==========================================
-    # WEBSOCKET CLIENT
+    # WEBSOCKET STATION
     # ==========================================
 
     async def station_client(self):
@@ -128,27 +162,33 @@ class Communication:
                 async with websockets.connect(self.config["url"]) as ws:
                     self.websocket = ws
 
-                    print(f"[{self.config['name']}] Verbunden!")
+                    print(f"[{self.config['name']}] VERBUNDEN!")
 
                     async for raw in ws:
-                        message = json.loads(raw)
+                        print("[WEBSOCKET RAW]", raw)
 
-                        print(f"[VON {self.config['name']}] {message}")
-
-                        # Nur Nachrichten weiterleiten,
-                        # die an die andere Station gehen.
-
-                        if message.get("destination") != self.config["other_station"]:
+                        try:
+                            message = json.loads(raw)
+                        except json.JSONDecodeError:
                             continue
 
-                        field = self.config["incoming_field"]
+                        destination = message.get("destination")
+
+                        if destination != self.config["other"]:
+                            print("[INFO] Nachricht nicht für", self.config["other"])
+                            continue
+
+                        field = self.config["field"]
 
                         if field not in message:
+                            print("[INFO] Nutzdaten fehlen")
                             continue
 
                         outgoing = {
+                            "type": "station_message",
+                            "id": str(uuid.uuid4()),
                             "source": self.config["name"],
-                            "destination": self.config["other_station"],
+                            "destination": destination,
                             "payload": message[field],
                             "timestamp": time.time(),
                         }
@@ -161,7 +201,25 @@ class Communication:
             finally:
                 self.websocket = None
 
+            print("[WEBSOCKET] Neuer Versuch in 2 Sekunden")
             await asyncio.sleep(2)
+
+    # ==========================================
+    # HEARTBEAT ALLE 2 SEKUNDEN
+    # ==========================================
+
+    async def heartbeat(self):
+
+        while True:
+            message = {
+                "type": "heartbeat",
+                "station": self.config["name"],
+                "timestamp": time.time(),
+            }
+
+            await self.send_to_peer(message)
+
+            await asyncio.sleep(INTERVAL)
 
     # ==========================================
     # TCP SERVER
@@ -169,13 +227,9 @@ class Communication:
 
     async def start_server(self):
 
-        server = await asyncio.start_server(
-            self.handle_client,
-            "0.0.0.0",
-            PORT,
-        )
+        server = await asyncio.start_server(self.handle_client, "0.0.0.0", TCP_PORT)
 
-        print(f"[SERVER] TCP Port {PORT} aktiv")
+        print(f"[SERVER] TCP Port {TCP_PORT} aktiv")
 
         async with server:
             await server.serve_forever()
@@ -193,9 +247,19 @@ class Communication:
 
             print()
             print("=" * 45)
-            print(f"LAUFZEIT: {duration} Sekunden")
-            print(f"GESENDET: {self.sent}")
-            print(f"EMPFANGEN: {self.received}")
+            print("SHIP COMMUNICATION STATUS")
+            print("=" * 45)
+
+            print("LAUFZEIT:", duration, "Sekunden")
+            print("STATION:", self.config["name"])
+            print("PARTNER:", self.peer)
+
+            print("GESENDET:", self.sent)
+            print("EMPFANGEN:", self.received)
+            print("AN STATION WEITERGELEITET:", self.forwarded)
+
+            print("WEBSOCKET:", "VERBUNDEN" if self.websocket else "GETRENNT")
+
             print("=" * 45)
             print()
 
@@ -208,39 +272,37 @@ class Communication:
         print("=" * 45)
         print("SHIP COMMUNICATION MISSION")
         print("=" * 45)
+
         print("Station:", self.config["name"])
         print("Partner VM:", self.peer)
-        print("TCP Port:", PORT)
+        print("TCP Port:", TCP_PORT)
         print("WebSocket:", self.config["url"])
+
         print("=" * 45)
 
         await asyncio.gather(
             self.start_server(),
             self.station_client(),
+            self.station_sender(),
+            self.heartbeat(),
             self.status(),
         )
 
 
+# ==========================================
+# START
+# ==========================================
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
-    parser.add_argument(
-        "--station",
-        choices=["elyse", "shangris"],
-        required=True,
-    )
+    parser.add_argument("--station", choices=["elyse", "shangris"], required=True)
 
-    parser.add_argument(
-        "--peer",
-        required=True,
-    )
+    parser.add_argument("--peer", required=True)
 
     args = parser.parse_args()
 
-    app = Communication(
-        args.station,
-        args.peer,
-    )
+    app = Communication(args.station, args.peer)
 
     try:
         asyncio.run(app.run())
