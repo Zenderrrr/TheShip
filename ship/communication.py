@@ -8,56 +8,83 @@ import time
 import websockets
 
 PORT = 5000
-SHANGRIS_WS = "ws://127.0.0.1:2025/ws"
+
+STATIONS = {
+    "elyse": {
+        "name": "Elyse Terminal",
+        "url": "ws://127.0.0.1:2026/api",
+        "incoming_field": "msg",
+        "outgoing_field": "msg",
+        "other_station": "Shangris Station",
+    },
+    "shangris": {
+        "name": "Shangris Station",
+        "url": "ws://127.0.0.1:2025/ws",
+        "incoming_field": "data",
+        "outgoing_field": "data",
+        "other_station": "Elyse Terminal",
+    },
+}
 
 
 class Communication:
     def __init__(self, station, peer):
         self.station = station
         self.peer = peer
+        self.config = STATIONS[station]
         self.websocket = None
-        self.clients = set()
+
+        self.sent = 0
+        self.received = 0
+        self.start_time = time.time()
 
     # ==========================================
-    # NACHRICHTEN AN ANDERE VM SENDEN
+    # NACHRICHT AN ANDERE VM SENDEN
     # ==========================================
 
     async def send_to_peer(self, message):
         try:
-            reader, writer = await asyncio.open_connection(self.peer, PORT)
+            reader, writer = await asyncio.open_connection(
+                self.peer,
+                PORT,
+            )
 
-            writer.write((json.dumps(message) + "\n").encode())
+            writer.write((json.dumps(message) + "\n").encode("utf-8"))
 
             await writer.drain()
 
             writer.close()
             await writer.wait_closed()
 
-            print("[VM -> VM]", message)
+            self.sent += 1
 
-        except Exception as e:
-            print("[VM FEHLER]", e)
+            print(f"[VM -> VM] Nachricht {self.sent}: {message}")
+
+        except Exception as error:
+            print("[VM SENDEFEHLER]", error)
 
     # ==========================================
-    # NACHRICHTEN VON ANDERER VM EMPFANGEN
+    # NACHRICHT VON ANDERER VM EMPFANGEN
     # ==========================================
 
     async def handle_client(self, reader, writer):
         try:
             while True:
-                data = await reader.readline()
+                raw = await reader.readline()
 
-                if not data:
+                if not raw:
                     break
 
-                message = json.loads(data.decode())
+                message = json.loads(raw.decode("utf-8"))
 
-                print("[VM EMPFANGEN]", message)
+                self.received += 1
+
+                print(f"[VM EMPFANGEN] Nachricht {self.received}: {message}")
 
                 await self.send_to_station(message)
 
-        except Exception as e:
-            print("[CLIENT FEHLER]", e)
+        except Exception as error:
+            print("[TCP FEHLER]", error)
 
         finally:
             writer.close()
@@ -69,53 +96,67 @@ class Communication:
 
     async def send_to_station(self, message):
 
-        if self.station == "shangris":
-            if self.websocket is None:
-                print("[SHANGRIS] Nicht verbunden")
-                return
+        if self.websocket is None:
+            print("[WARNUNG] Station nicht verbunden")
+            return
 
-            outgoing = {"source": "Elyse Terminal", "data": message["data"]}
+        field = self.config["outgoing_field"]
 
+        outgoing = {
+            "source": self.config["other_station"],
+            field: message["payload"],
+        }
+
+        try:
             await self.websocket.send(json.dumps(outgoing))
 
-            print("[AN SHANGRIS]", outgoing)
+            print(f"[AN {self.config['name']}] {outgoing}")
 
-        elif self.station == "elyse":
-            # TODO:
-            # Hier muss die REST-API von Elyse
-            # eingebaut werden.
-            print("[AN ELYSE] REST-API fehlt:", message)
+        except Exception as error:
+            print("[STATION SENDEFEHLER]", error)
 
     # ==========================================
-    # SHANGRIS WEBSOCKET
+    # WEBSOCKET CLIENT
     # ==========================================
 
-    async def shangris_client(self):
+    async def station_client(self):
 
         while True:
             try:
-                print("[SHANGRIS] Verbinde ...")
+                print(f"[{self.config['name']}] Verbinde ...")
 
-                async with websockets.connect(SHANGRIS_WS) as ws:
+                async with websockets.connect(self.config["url"]) as ws:
                     self.websocket = ws
 
-                    print("[SHANGRIS] Verbunden!")
+                    print(f"[{self.config['name']}] Verbunden!")
 
                     async for raw in ws:
                         message = json.loads(raw)
 
-                        print("[VON SHANGRIS]", message)
+                        print(f"[VON {self.config['name']}] {message}")
 
-                        if message.get("destination") == "Elyse Terminal":
-                            outgoing = {
-                                "source": "Shangris Station",
-                                "data": message["data"],
-                            }
+                        # Nur Nachrichten weiterleiten,
+                        # die an die andere Station gehen.
 
-                            await self.send_to_peer(outgoing)
+                        if message.get("destination") != self.config["other_station"]:
+                            continue
 
-            except Exception as e:
-                print("[SHANGRIS FEHLER]", e)
+                        field = self.config["incoming_field"]
+
+                        if field not in message:
+                            continue
+
+                        outgoing = {
+                            "source": self.config["name"],
+                            "destination": self.config["other_station"],
+                            "payload": message[field],
+                            "timestamp": time.time(),
+                        }
+
+                        await self.send_to_peer(outgoing)
+
+            except Exception as error:
+                print("[WEBSOCKET FEHLER]", error)
 
             finally:
                 self.websocket = None
@@ -128,12 +169,35 @@ class Communication:
 
     async def start_server(self):
 
-        server = await asyncio.start_server(self.handle_client, "0.0.0.0", PORT)
+        server = await asyncio.start_server(
+            self.handle_client,
+            "0.0.0.0",
+            PORT,
+        )
 
-        print(f"[SERVER] Port {PORT} aktiv")
+        print(f"[SERVER] TCP Port {PORT} aktiv")
 
         async with server:
             await server.serve_forever()
+
+    # ==========================================
+    # STATUS
+    # ==========================================
+
+    async def status(self):
+
+        while True:
+            await asyncio.sleep(5)
+
+            duration = int(time.time() - self.start_time)
+
+            print()
+            print("=" * 45)
+            print(f"LAUFZEIT: {duration} Sekunden")
+            print(f"GESENDET: {self.sent}")
+            print(f"EMPFANGEN: {self.received}")
+            print("=" * 45)
+            print()
 
     # ==========================================
     # HAUPTPROGRAMM
@@ -142,30 +206,41 @@ class Communication:
     async def run(self):
 
         print("=" * 45)
-        print("SHIP COMMUNICATION")
+        print("SHIP COMMUNICATION MISSION")
         print("=" * 45)
-        print("Station:", self.station)
-        print("Partner:", self.peer)
-        print("Port:", PORT)
+        print("Station:", self.config["name"])
+        print("Partner VM:", self.peer)
+        print("TCP Port:", PORT)
+        print("WebSocket:", self.config["url"])
+        print("=" * 45)
 
-        tasks = [asyncio.create_task(self.start_server())]
-
-        if self.station == "shangris":
-            tasks.append(asyncio.create_task(self.shangris_client()))
-
-        await asyncio.gather(*tasks)
+        await asyncio.gather(
+            self.start_server(),
+            self.station_client(),
+            self.status(),
+        )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--station", choices=["shangris", "elyse"], required=True)
+    parser.add_argument(
+        "--station",
+        choices=["elyse", "shangris"],
+        required=True,
+    )
 
-    parser.add_argument("--peer", required=True)
+    parser.add_argument(
+        "--peer",
+        required=True,
+    )
 
     args = parser.parse_args()
 
-    app = Communication(args.station, args.peer)
+    app = Communication(
+        args.station,
+        args.peer,
+    )
 
     try:
         asyncio.run(app.run())
